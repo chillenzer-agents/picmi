@@ -9,7 +9,7 @@ import numpy as np
 import picmistandard
 import pytest
 from plasmacode import picmi
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 
 def cartesian3d_grid_per_axis(**kw):
@@ -951,6 +951,8 @@ def test_grid_guard_and_pml_cells_are_not_negative():
     with pytest.raises(ValidationError, match="pml_cells must be greater than or equal to 0"):
         cartesian1d_grid(pml_cells=[-1])
     with pytest.raises(ValidationError, match="pml_cells must be greater than or equal to 0"):
+        cartesian2d_grid(pml_cells=[1, -2])
+    with pytest.raises(ValidationError, match="pml_cells must be greater than or equal to 0"):
         cylindrical_grid(pml_cells=[1, -2])
 
 
@@ -990,6 +992,34 @@ def test_cfl_and_time_step_size_are_cross_checked():
     )
     assert simulation.time_step_size is None
 
+    # a zero time step with a non-zero cfl fails cleanly instead of dividing by zero
+    with pytest.raises(ValidationError, match="time_step_size and the solver's cfl are inconsistent"):
+        picmi.Simulation(
+            solver=picmi.ElectromagneticSolver(grid=grid, method="Yee", cfl=0.5),
+            time_step_size=0.,
+        )
+
+    # the check is skipped without registered constants
+    picmistandard.register_constants(None)
+    try:
+        picmi.Simulation(
+            solver=picmi.ElectromagneticSolver(grid=grid, method="Yee", cfl=0.5),
+            time_step_size=1e-9,
+        )
+    finally:
+        picmistandard.register_constants(picmi.constants)
+
+    # ... and for the cases the cross-check does not cover
+    for solver in (
+        # a cylindrical grid's radial cells are not uniform
+        picmi.ElectromagneticSolver(grid=cylindrical_grid(), method="Yee", cfl=0.5),
+        # the method is code dependent
+        picmi.ElectromagneticSolver(grid=grid, cfl=0.5),
+        # spectral solvers do not impose the CFL limit
+        picmi.ElectromagneticSolver(grid=grid, method="PSTD", cfl=0.5),
+    ):
+        picmi.Simulation(solver=solver, time_step_size=1e-9)
+
 
 def test_particle_shape_accepts_other_prefix():
     for shape in ("NGP", "linear", "quadratic", "cubic", 2, "other:custom"):
@@ -1020,10 +1050,24 @@ def test_laser_vectors_have_length_3_and_directions_are_unit_vectors():
         gaussian_laser(centroid_position=[0., 0., 0., 0.])
 
     picmi.LaserAntenna(position=[1., 2., 3.], normal_vector=[0., 0., 1.])
+    # None means "use the laser's propagation direction"
+    assert picmi.LaserAntenna(position=[0., 0., 0.], normal_vector=None).normal_vector is None
+    assert picmi.LaserAntenna(position=[0., 0., 0.]).normal_vector is None
     with pytest.raises(ValidationError, match="position must be a vector of length 3"):
         picmi.LaserAntenna(position=[1., 2.])
     with pytest.raises(ValidationError, match="normal_vector must be a unit vector"):
         picmi.LaserAntenna(position=[0., 0., 0.], normal_vector=[0., 0., 2.])
+
+    # the analytic laser shares the vector validation with the Gaussian one
+    analytic = {
+        "field_expression": "0", "wavelength": 8e-7, "amax": 1.,
+        "propagation_direction": [0., 0., 1.], "polarization_direction": [1., 0., 0.],
+    }
+    picmi.AnalyticLaser(**analytic)
+    with pytest.raises(ValidationError, match="propagation_direction must be a unit vector"):
+        picmi.AnalyticLaser(**{**analytic, "propagation_direction": [0., 0., 2.]})
+    with pytest.raises(ValidationError, match="polarization_direction must be a unit vector"):
+        picmi.AnalyticLaser(**{**analytic, "polarization_direction": [1., 1., 0.]})
 
 
 def test_gaussian_laser_centroid_and_focus_are_collinear():
@@ -1108,6 +1152,42 @@ def test_simulation_validates_species_and_layout_bookkeeping():
             layouts=[[layout]],
         )
 
+    # a single layout applies to all initial distributions
+    several_distributions = picmi.Species(
+        particle_type="electron", initial_distribution=[distribution, distribution],
+    )
+    simulation = picmi.Simulation(species=[several_distributions], layouts=[layout])
+    assert simulation.layouts == [layout]
+    simulation = picmi.Simulation()
+    simulation.add_species(several_distributions, layout)
+    assert simulation.layouts == [layout]
+
+    # the members of a MultiSpecies get their density_scale from the proportions
+    multi = picmi.MultiSpecies(
+        particle_types=["electron", "electron"], proportions=[0.5, 0.5],
+    )
+    with pytest.raises(ValidationError, match="density_scale, so it needs an initial_distribution"):
+        picmi.Simulation(species=[multi], layouts=[None])
+    with pytest.raises(ValidationError, match="density_scale, so it needs an initial_distribution"):
+        picmi.Simulation().add_species(multi, None)
+    # no proportions (or all-None proportions) do not require a distribution
+    picmi.Simulation(
+        species=[picmi.MultiSpecies(particle_types=["electron", "electron"])],
+        layouts=[None],
+    )
+    picmi.Simulation(
+        species=[picmi.MultiSpecies(
+            particle_types=["electron", "electron"], proportions=[None, None],
+        )],
+        layouts=[None],
+    )
+    # a distribution makes the proportional MultiSpecies valid
+    multi_with_distribution = picmi.MultiSpecies(
+        particle_types=["electron", "electron"], proportions=[0.5, 0.5],
+        initial_distribution=distribution,
+    )
+    picmi.Simulation(species=[multi_with_distribution], layouts=[layout])
+
     # the add_species path stays atomic
     simulation = picmi.Simulation()
     simulation.add_species(species, layout)
@@ -1187,3 +1267,37 @@ def test_subclass_validators_and_methods_list_semantics():
     assert ExtendedSpecies(name="e", method="Custom").method == "Custom"
     with pytest.raises(ValidationError, match="Custom"):
         picmistandard.PICMI_Species(name="e", method="Custom")
+
+
+def test_subclass_model_validators_merge_unless_renamed():
+    """A distinct-named model validator adds to the inherited one; a same-named one replaces it."""
+    class Parent(picmistandard.PICMI_Species):
+        @model_validator(mode="after")
+        def _reject_parent_name(self):
+            if self.name == "parent-only":
+                raise ValueError("parent model rejects")
+            return self
+
+    class Child(Parent):
+        @model_validator(mode="after")
+        def _reject_child_name(self):
+            if self.name == "child-only":
+                raise ValueError("child model rejects")
+            return self
+
+    with pytest.raises(ValidationError, match="parent model rejects"):
+        Child(name="parent-only")
+    with pytest.raises(ValidationError, match="child model rejects"):
+        Child(name="child-only")
+    assert Child(name="fine").name == "fine"
+
+    class ShadowingChild(Parent):
+        @model_validator(mode="after")
+        def _reject_parent_name(self):
+            if self.name == "child-only":
+                raise ValueError("child model rejects")
+            return self
+
+    assert ShadowingChild(name="parent-only").name == "parent-only"
+    with pytest.raises(ValidationError, match="child model rejects"):
+        ShadowingChild(name="child-only")

@@ -18,7 +18,12 @@ from .fields import (
 )
 from .interactions import PICMI_AnyInteraction
 from .lasers import PICMI_AnyLaser, PICMI_AnyLaserInjection
-from .particles import PICMI_AnyLayout, PICMI_AnySpecies, _ParticleShape
+from .particles import (
+    PICMI_AnyLayout,
+    PICMI_AnySpecies,
+    PICMI_MultiSpecies,
+    _ParticleShape,
+)
 
 # ---------------------
 # Main simulation object
@@ -159,6 +164,12 @@ class PICMI_Simulation(_PICMIModel):
                 sum(1.0 / size**2 for size in cell_size)
             )
         if not math.isclose(solver.cfl, expected_cfl, rel_tol=1e-9):
+            if expected_cfl == 0.:
+                raise ValueError(
+                    "time_step_size and the solver's cfl are inconsistent: "
+                    f"cfl={solver.cfl} requires a non-zero time_step_size, but it is "
+                    f"{self.time_step_size} [s]."
+                )
             corresponding_time_step = self.time_step_size * solver.cfl / expected_cfl
             raise ValueError(
                 "time_step_size and the solver's cfl are inconsistent: "
@@ -189,10 +200,14 @@ class PICMI_Simulation(_PICMIModel):
                     f"Species {index} has a layout, so it needs an initial_distribution, "
                     "but its initial_distribution is None."
                 )
-            if (
-                getattr(species, "density_scale", None) is not None
-                and not has_distribution
-            ):
+            if isinstance(species, PICMI_MultiSpecies):
+                # The members of a MultiSpecies get a density_scale from the proportions.
+                density_scales = [
+                    member.density_scale for member in species.species_instances_list
+                ]
+            else:
+                density_scales = [getattr(species, "density_scale", None)]
+            if any(scale is not None for scale in density_scales) and not has_distribution:
                 raise ValueError(
                     f"Species {index} has a density_scale, so it needs an initial_distribution."
                 )
@@ -216,11 +231,11 @@ class PICMI_Simulation(_PICMIModel):
                     setattr(self, name, [*getattr(self, name), entry])
             finally:
                 self._suspend_species_bookkeeping = False
-            # Run the cross-field validators once for the complete set of entries.
+            # Re-assign one of the extended fields with bookkeeping enabled, so that the
+            # public assignment validation runs the cross-field validators once for the
+            # complete set of entries. A plain (same-value) assignment still validates.
             first_name = next(iter(entries))
-            self.__pydantic_validator__.validate_assignment(
-                self, first_name, getattr(self, first_name)
-            )
+            setattr(self, first_name, getattr(self, first_name))
 
     def add_species(self, species, layout, initialize_self_field=None):
         """

@@ -31,4 +31,5 @@ Smoothing
 
 The ``cfl`` of an electromagnetic solver is cross-checked against the simulation's
 ``time_step_size`` for the ``'Yee'``, ``'CKC'`` and ``'Lehe'`` methods on Cartesian grids,
-see :doc:`simulation`.
+see :doc:`simulation`. The cross-check requires the implementing code to register its
+physical constants; otherwise it is skipped.
