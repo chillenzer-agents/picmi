@@ -32,6 +32,17 @@ in physical units until the implementing code resolves them with its time step
 size and number of time steps (see :meth:`picmistandard.TimeStepSpec.get_as_steps`);
 the standard defines the conversion rules, not when a code applies them.
 
+:class:`picmistandard.PICMI_FieldDiagnostic`,
+:class:`picmistandard.PICMI_ElectrostaticFieldDiagnostic` and
+:class:`picmistandard.PICMI_ParticleDiagnostic` additionally accept ``step_min``
+and ``step_max``. These bound the steps at which the diagnostic may write: the
+effective steps are the intersection of the steps selected by ``period`` with
+``[step_min, step_max]`` (defaults: 0 and the last step of the run). The bounds
+neither replace nor re-base ``period``; when the intersection is empty the
+diagnostic writes nothing.
+:class:`picmistandard.PICMI_ParticleBoundaryScrapingDiagnostic` has no such
+bounds.
+
 Slices are inclusive on both ends, specifications separated by commas form a
 union, and several specifications can be united with ``+``:
 

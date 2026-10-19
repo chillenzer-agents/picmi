@@ -49,8 +49,8 @@ Diagnostics that are scheduled in time steps accept a
 .. autodata:: picmistandard.TS
     :no-value:
 
-.. autoclass:: picmistandard.TimeStepSpec
-    :members:
+.. autopydantic_model:: picmistandard.TimeStepSpec
+    :inherited-members: BaseModel
 
-.. autoclass:: picmistandard.Spec
-    :members:
+.. autopydantic_model:: picmistandard.Spec
+    :inherited-members: BaseModel

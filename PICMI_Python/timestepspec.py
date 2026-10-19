@@ -4,9 +4,9 @@ Diagnostics (and, in the future, other features) may select the time steps at wh
 they are active. A specification is written with the ``[]`` operator of the module
 level factory :data:`TS`, or of :class:`TimeStepSpec`::
 
-    picmi.TS[::10]("steps")          # every 10th time step
-    picmi.TS[1e-15:5e-15]("seconds") # a physical time window
-    picmi.TS[0:12:2, 20]("steps")    # a union of specifications
+    picmistandard.TS[::10]("steps")          # every 10th time step
+    picmistandard.TS[1e-15:5e-15]("seconds") # a physical time window
+    picmistandard.TS[0:12:2, 20]("steps")    # a union of specifications
 
 Calling the factory with a unit returns an immutable :class:`TimeStepSpec` model,
 which is the value that is stored in the PICMI objects. Specifications in seconds
@@ -23,7 +23,9 @@ Semantics of the specifications:
 - Negative ``start`` and ``stop`` count from the end; ``-1`` denotes the last
   time step.
 - An individual number denotes a single time step.
-- ``step`` must be at least one when the specification is resolved in steps.
+- ``step`` must be at least one when the specification is resolved in steps. A
+  negative ``step`` is rejected in both units, following the PIConGPU
+  convention.
 - Specifications in seconds are converted with ``start -> floor(start / dt)``,
   ``stop -> ceil(stop / dt)`` and ``step -> max(floor(step / dt), 1)``, so that
   the requested physical window is covered.
@@ -73,8 +75,8 @@ class TimeStepSpec(_PICMIModel):
 
     Use the factory syntax to create one::
 
-        picmi.TS[::10]("steps")
-        picmi.TS[0:1e-14:2e-15]("seconds")
+        picmistandard.TS[::10]("steps")
+        picmistandard.TS[0:1e-14:2e-15]("seconds")
 
     Specifications given in seconds are stored as such and converted lazily by
     :meth:`get_as_steps`, once the time step size is known. Specifications can be
@@ -173,6 +175,12 @@ class TimeStepSpec(_PICMIModel):
             raise ValueError(
                 f"Time step size must be strictly positive to resolve a specification in seconds. You gave {time_step_size}."
             )
+        for spec in self.specs_in_seconds:
+            if spec.step is not None and spec.step < 0:
+                raise ValueError(
+                    "Step size must be >= 0 in a specification in seconds. "
+                    f"You gave {spec.step}."
+                )
         return tuple(
             Spec(
                 start=None if spec.start is None else floor(spec.start / time_step_size),
@@ -261,5 +269,5 @@ class _TimeStepSpecFactory:
         return TimeStepSpec(specs_in_seconds=specs, unit_system="seconds")
 
 
-#: The factory for time step specifications, e.g., ``picmi.TS[::10]("steps")``.
+#: The factory for time step specifications, e.g., ``picmistandard.TS[::10]("steps")``.
 TS = _TimeStepSpecFactory()
