@@ -38,3 +38,19 @@ Analytic expressions are given as strings.
 
 .. autodata:: picmistandard.Expression
     :no-value:
+
+Time step specifications
+------------------------
+
+Diagnostics that are scheduled in time steps accept a
+:class:`picmistandard.TimeStepSpec`, created through the
+:data:`picmistandard.TS` factory:
+
+.. autodata:: picmistandard.TS
+    :no-value:
+
+.. autoclass:: picmistandard.TimeStepSpec
+    :members:
+
+.. autoclass:: picmistandard.Spec
+    :members:

@@ -8,6 +8,7 @@ from pydantic import Field
 from .base import PICMI_Diagnostic, _PICMIModel
 from .fields import PICMI_AnyGrid
 from .particles import PICMI_AnySpecies
+from .timestepspec import TimeStepSpec
 
 # ----------------------------
 # Simulation frame diagnostics
@@ -21,8 +22,8 @@ class PICMI_FieldDiagnostic(PICMI_Diagnostic):
     grid: PICMI_AnyGrid = Field(
         description="Grid object for the diagnostic"
     )
-    period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+    period: int | TimeStepSpec = Field(
+        description="Period of time steps that the diagnostic is performed. Either an integer (every Nth step) or a TimeStepSpec."
     )
     data_list: list[str] | None = Field(
         default=None,
@@ -69,8 +70,8 @@ class PICMI_ElectrostaticFieldDiagnostic(PICMI_Diagnostic):
     grid: PICMI_AnyGrid = Field(
         description="Grid object for the diagnostic"
     )
-    period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+    period: int | TimeStepSpec = Field(
+        description="Period of time steps that the diagnostic is performed. Either an integer (every Nth step) or a TimeStepSpec."
     )
     data_list: list[str] | None = Field(
         default=None,
@@ -114,8 +115,8 @@ class PICMI_ParticleDiagnostic(PICMI_Diagnostic):
     """
     Defines the particle diagnostics in the simulation frame
     """
-    period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+    period: int | TimeStepSpec = Field(
+        description="Period of time steps that the diagnostic is performed. Either an integer (every Nth step) or a TimeStepSpec."
     )
     species: PICMI_AnySpecies | list[PICMI_AnySpecies] | None = Field(
         default=None,
@@ -151,8 +152,8 @@ class PICMI_ParticleBoundaryScrapingDiagnostic(PICMI_Diagnostic):
     """
     Defines the particle diagnostics that are used to collect the particles that are absorbed at the boundaries, throughout the simulation.
     """
-    period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+    period: int | TimeStepSpec = Field(
+        description="Period of time steps that the diagnostic is performed. Either an integer (every Nth step) or a TimeStepSpec."
     )
     species: PICMI_AnySpecies | list[PICMI_AnySpecies] | None = Field(
         default=None,
