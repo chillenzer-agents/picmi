@@ -4,15 +4,15 @@ These should be the base classes for Python implementation of the PICMI standard
 import math
 from typing import ClassVar, Self
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from .base import (
     Expression,
+    PICMI_ExpressionParameters,
     PICMI_Laser,
     PICMI_LaserInjection,
-    _PICMIModel,
-    PICMI_ExpressionParameters,
     _get_constants,
+    _PICMIModel,
     resolve_once,
 )
 
@@ -20,6 +20,17 @@ from .base import (
 # ---------------
 # Physics objects
 # ---------------
+def _check_vector3(value, name, unit_norm=False):
+    """Check that a laser parameter is a vector of length 3, optionally a unit vector"""
+    if len(value) != 3:
+        raise ValueError(f"{name} must be a vector of length 3, but it has length {len(value)}.")
+    if unit_norm:
+        norm = math.sqrt(sum(component * component for component in value))
+        if not math.isclose(norm, 1.0, rel_tol=1.0e-5, abs_tol=1.0e-5):
+            raise ValueError(f"{name} must be a unit vector, but its norm is {norm}.")
+    return value
+
+
 def _compute_E0_a0(wavelength, original_E0, original_a0, names=("E0", "a0")):
         """Return ``(E0, a0)``, computing the one that is ``None`` from the other one."""
         if original_E0 is None and original_a0 is None:
@@ -57,6 +68,11 @@ class _PICMILaser(PICMI_Laser):
     # of the amplitudes, and the field name of the amplitude that the other one is derived from.
     _resolved_state: tuple | None = PrivateAttr(default=None)
     _amplitude_source: str | None = PrivateAttr(default=None)
+
+    @field_validator("propagation_direction", "polarization_direction", check_fields=False)
+    @classmethod
+    def _directions_are_unit_vectors(cls, value, info):
+        return _check_vector3(value, info.field_name, unit_norm=True)
 
     @property
     def k0(self) -> float:
@@ -188,6 +204,37 @@ class PICMI_GaussianLaser(_PICMILaser):
 
     _amplitude_fields: ClassVar[tuple[str, str]] = ("a0", "E0")
 
+    @field_validator("focal_position", "centroid_position")
+    @classmethod
+    def _positions_are_vectors_of_length_3(cls, value, info):
+        return _check_vector3(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _centroid_and_focus_are_collinear(self):
+        """The propagation direction connects the centroid and the focus.
+
+        The tolerance follows the convention of the implementing codes: the squared norm of
+        the cross product of the centroid-to-focus vector and the propagation direction must
+        be below 1e-5 (positions in meters).
+        """
+        difference = [
+            focus - centroid
+            for focus, centroid in zip(self.focal_position, self.centroid_position)
+        ]
+        cross_product = [
+            difference[1] * self.propagation_direction[2] - difference[2] * self.propagation_direction[1],
+            difference[2] * self.propagation_direction[0] - difference[0] * self.propagation_direction[2],
+            difference[0] * self.propagation_direction[1] - difference[1] * self.propagation_direction[0],
+        ]
+        if sum(component * component for component in cross_product) >= 1.0e-5:
+            raise ValueError(
+                "propagation_direction must be parallel to the vector from centroid_position "
+                f"to focal_position, but propagation_direction={self.propagation_direction}, "
+                f"centroid_position={self.centroid_position}, and "
+                f"focal_position={self.focal_position} are not collinear."
+            )
+        return self
+
 
 class PICMI_AnalyticLaser(_PICMILaser, PICMI_ExpressionParameters):
     """
@@ -250,8 +297,20 @@ class PICMI_LaserAntenna(PICMI_LaserInjection):
     )
     normal_vector: list[float] | None = Field(
         default=None,
-        description="Vector of length 3. Vector normal to antenna plane, defaults to the laser direction of propagation [1]"
+        description="Unit vector of length 3. Vector normal to antenna plane, defaults to the laser direction of propagation [1]"
     )
+
+    @field_validator("position")
+    @classmethod
+    def _position_is_a_vector_of_length_3(cls, value):
+        return _check_vector3(value, "position")
+
+    @field_validator("normal_vector")
+    @classmethod
+    def _normal_vector_is_a_unit_vector(cls, value):
+        if value is None:
+            return value
+        return _check_vector3(value, "normal_vector", unit_norm=True)
 
 
 PICMI_AnyLaserInjection = PICMI_LaserAntenna | PICMI_LaserInjection

@@ -40,3 +40,14 @@ Classes with analytic expressions, whose parameters are given as additional keyw
 
 .. autopydantic_model:: picmistandard.PICMI_ExpressionParameters
     :inherited-members: BaseModel
+
+Extending validators and option lists
+-------------------------------------
+
+Downstream classes inherit the pydantic validators of their PICMI base class: a validator
+that a subclass adds under a new name runs in addition to the inherited ones. Redefining a
+validator under the *same* name replaces the inherited one (pydantic's override semantics),
+so a downstream code that wants to add a check should use a distinct name. A downstream
+species can also extend the accepted particle advance methods by overriding the
+``methods_list`` class attribute; the standard's ``method`` validator reads the list from the
+class of the instance, so the extended list applies to that subclass.

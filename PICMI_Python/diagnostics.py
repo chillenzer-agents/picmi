@@ -22,7 +22,8 @@ class PICMI_FieldDiagnostic(PICMI_Diagnostic):
         description="Grid object for the diagnostic"
     )
     period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+        ge=1,
+        description="Period of time steps that the diagnostic is performed. Must be at least 1."
     )
     data_list: list[str] | None = Field(
         default=None,
@@ -70,7 +71,8 @@ class PICMI_ElectrostaticFieldDiagnostic(PICMI_Diagnostic):
         description="Grid object for the diagnostic"
     )
     period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+        ge=1,
+        description="Period of time steps that the diagnostic is performed. Must be at least 1."
     )
     data_list: list[str] | None = Field(
         default=None,
@@ -115,7 +117,8 @@ class PICMI_ParticleDiagnostic(PICMI_Diagnostic):
     Defines the particle diagnostics in the simulation frame
     """
     period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+        ge=1,
+        description="Period of time steps that the diagnostic is performed. Must be at least 1."
     )
     species: PICMI_AnySpecies | list[PICMI_AnySpecies] | None = Field(
         default=None,
@@ -152,7 +155,8 @@ class PICMI_ParticleBoundaryScrapingDiagnostic(PICMI_Diagnostic):
     Defines the particle diagnostics that are used to collect the particles that are absorbed at the boundaries, throughout the simulation.
     """
     period: int = Field(
-        description="Period of time steps that the diagnostic is performed"
+        ge=1,
+        description="Period of time steps that the diagnostic is performed. Must be at least 1."
     )
     species: PICMI_AnySpecies | list[PICMI_AnySpecies] | None = Field(
         default=None,
