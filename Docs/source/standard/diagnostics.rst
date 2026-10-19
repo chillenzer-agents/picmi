@@ -30,3 +30,6 @@ These diagnostics are used when running boosted-frame simulations.
 
 .. autopydantic_model:: picmistandard.PICMI_LabFrameFieldDiagnostic
     :inherited-members: BaseModel
+
+The ``period`` of the step-scheduled diagnostics (field, electrostatic field, particle, and
+particle boundary scraping diagnostics) must be at least 1.

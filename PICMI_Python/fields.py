@@ -3,9 +3,16 @@ These should be the base classes for Python implementation of the PICMI standard
 """
 
 from typing import ClassVar, Literal, NamedTuple, Self, get_args
+
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 
-from .base import _PICMIModel, PICMI_Grid, PICMI_Solver, resolve_once
+from .base import (
+    PICMI_Grid,
+    PICMI_Solver,
+    _PICMIModel,
+    broadcast_validation,
+    resolve_once,
+)
 
 
 class _AxisGroup(NamedTuple):
@@ -119,6 +126,37 @@ class _PICMIGrid(PICMI_Grid):
             checked.append(region)
         return checked
 
+    @field_validator("guard_cells", "pml_cells", check_fields=False)
+    @classmethod
+    def _padding_is_not_negative(cls, value, info):
+        """The number of guard or PML cells is not negative on any axis"""
+        if value is None:
+            return value
+        return broadcast_validation(
+            value, condition=lambda cells: cells >= 0,
+            message=f"All {info.field_name} must be greater than or equal to 0.",
+        )
+
+    def _check_non_degenerate_grid(self):
+        """Check the resolved parameters that all grids share.
+
+        The grid must not be degenerate: every axis needs at least one cell and the upper
+        bound must be above the lower bound. For the cylindrical grid, the radial entries of
+        the bounds are ``rmin`` and ``rmax``, so this covers ``rmax > rmin`` as well.
+        """
+        for axis, cells in enumerate(self.number_of_cells):
+            if cells < 1:
+                raise ValueError(
+                    "The number of cells must be at least 1 on every axis, "
+                    f"but axis {axis} has {cells}."
+                )
+        for axis, (lower, upper) in enumerate(zip(self.lower_bound, self.upper_bound)):
+            if upper <= lower:
+                raise ValueError(
+                    "The upper bound must be greater than the lower bound on every axis, "
+                    f"but axis {axis} has lower_bound={lower} and upper_bound={upper}."
+                )
+
     def _resolve_cartesian_grid(self):
         """Check and resolve the parameters of a Cartesian grid
 
@@ -142,6 +180,7 @@ class _PICMIGrid(PICMI_Grid):
         # By default, if not specified, the particle boundary values and conditions are the
         # same as the field boundary values and conditions.
         self._resolve_axis_groups()
+        self._check_non_degenerate_grid()
 
 
 def _grid_axis_groups(axes, lower_boundary_condition_can_be_none=False):
@@ -232,19 +271,19 @@ class PICMI_Cartesian1DGrid(_PICMIGrid):
         default=None,
         min_length=1,
         max_length=1,
-        description="Number of cells along each axis (number of nodes is number_of_cells+1)",
+        description="Number of cells along each axis (number of nodes is number_of_cells+1). Must be at least 1 on every axis.",
     )
     lower_bound: list[float] | None = Field(
         default=None,
         min_length=1,
         max_length=1,
-        description="Position of the node at the lower bound [m]",
+        description="Position of the node at the lower bound [m]. Must be less than the upper bound on every axis.",
     )
     upper_bound: list[float] | None = Field(
         default=None,
         min_length=1,
         max_length=1,
-        description="Position of the node at the upper bound [m]",
+        description="Position of the node at the upper bound [m]. Must be greater than the lower bound on every axis.",
     )
     lower_boundary_conditions: list[str | None] | None = Field(
         default=None,
@@ -322,11 +361,11 @@ class PICMI_Cartesian1DGrid(_PICMIGrid):
         description="Boundary condition at max X for particles: One of periodic, absorbing, reflect, thermal",
     )
     guard_cells: list[int] | None = Field(
-        default=None, description="Number of guard cells used along each direction"
+        default=None, description="Number of guard cells used along each direction. Must be >= 0 on every axis."
     )
     pml_cells: list[int] | None = Field(
         default=None,
-        description="Number of Perfectly Matched Layer (PML) cells along each direction",
+        description="Number of Perfectly Matched Layer (PML) cells along each direction. Must be >= 0 on every axis.",
     )
 
     @model_validator(mode="after")
@@ -335,7 +374,7 @@ class PICMI_Cartesian1DGrid(_PICMIGrid):
         self._resolve_cartesian_grid()
         return self
 
-    def add_refined_region(self, level, lo, hi, refinement_factor=[2]):
+    def add_refined_region(self, level, lo, hi, refinement_factor=None):
         """Add a refined region.
 
         Parameters
@@ -349,6 +388,8 @@ class PICMI_Cartesian1DGrid(_PICMIGrid):
         refinement_factor : list of int, optional
             The refinement factor relative to the next lower level (default: [2])
         """
+        if refinement_factor is None:
+            refinement_factor = [2] * self.number_of_dimensions
         # assign (instead of appending in place), so that the region is validated and marked as set
         self.refined_regions = [*self.refined_regions, [level, lo, hi, refinement_factor]]
 
@@ -386,19 +427,19 @@ class PICMI_CylindricalGrid(_PICMIGrid):
         default=None,
         min_length=2,
         max_length=2,
-        description="Number of cells along each axis (number of nodes is number_of_cells+1)",
+        description="Number of cells along each axis (number of nodes is number_of_cells+1). Must be at least 1 on every axis.",
     )
     lower_bound: list[float] | None = Field(
         default=None,
         min_length=2,
         max_length=2,
-        description="Position of the node at the lower bound [m]",
+        description="Position of the node at the lower bound [m]. Must be less than the upper bound on every axis.",
     )
     upper_bound: list[float] | None = Field(
         default=None,
         min_length=2,
         max_length=2,
-        description="Position of the node at the upper bound [m]",
+        description="Position of the node at the upper bound [m]. Must be greater than the lower bound on every axis.",
     )
     lower_boundary_conditions: list[str | None] | None = Field(
         default=None,
@@ -511,11 +552,11 @@ class PICMI_CylindricalGrid(_PICMIGrid):
         description="Boundary condition at max Z for particles: One of periodic, absorbing, reflect, thermal",
     )
     guard_cells: list[int] | None = Field(
-        default=None, description="Number of guard cells used along each direction"
+        default=None, description="Number of guard cells used along each direction. Must be >= 0 on every axis."
     )
     pml_cells: list[int] | None = Field(
         default=None,
-        description="Number of Perfectly Matched Layer (PML) cells along each direction",
+        description="Number of Perfectly Matched Layer (PML) cells along each direction. Must be >= 0 on every axis.",
     )
 
     @field_validator("lower_bound")
@@ -557,10 +598,11 @@ class PICMI_CylindricalGrid(_PICMIGrid):
         # By default, if not specified, particle boundary values are the same as field boundary values
         # By default, if not specified, particle boundary conditions are the same as field boundary conditions
         self._resolve_axis_groups()
+        self._check_non_degenerate_grid()
 
         return self
 
-    def add_refined_region(self, level, lo, hi, refinement_factor=[2, 2]):
+    def add_refined_region(self, level, lo, hi, refinement_factor=None):
         """Add a refined region.
 
         Parameters
@@ -574,6 +616,8 @@ class PICMI_CylindricalGrid(_PICMIGrid):
         refinement_factor : list of int, optional
             The refinement factor relative to the next lower level (default: [2, 2])
         """
+        if refinement_factor is None:
+            refinement_factor = [2] * self.number_of_dimensions
         # assign (instead of appending in place), so that the region is validated and marked as set
         self.refined_regions = [*self.refined_regions, [level, lo, hi, refinement_factor]]
 
@@ -611,19 +655,19 @@ class PICMI_Cartesian2DGrid(_PICMIGrid):
         default=None,
         min_length=2,
         max_length=2,
-        description="Number of cells along each axis (number of nodes is number_of_cells+1)",
+        description="Number of cells along each axis (number of nodes is number_of_cells+1). Must be at least 1 on every axis.",
     )
     lower_bound: list[float] | None = Field(
         default=None,
         min_length=2,
         max_length=2,
-        description="Position of the node at the lower bound [m]",
+        description="Position of the node at the lower bound [m]. Must be less than the upper bound on every axis.",
     )
     upper_bound: list[float] | None = Field(
         default=None,
         min_length=2,
         max_length=2,
-        description="Position of the node at the upper bound [m]",
+        description="Position of the node at the upper bound [m]. Must be greater than the lower bound on every axis.",
     )
     lower_boundary_conditions: list[str | None] | None = Field(
         default=None,
@@ -732,11 +776,11 @@ class PICMI_Cartesian2DGrid(_PICMIGrid):
         description="Boundary condition at max Y for particles: One of periodic, absorbing, reflect, thermal",
     )
     guard_cells: list[int] | None = Field(
-        default=None, description="Number of guard cells used along each direction"
+        default=None, description="Number of guard cells used along each direction. Must be >= 0 on every axis."
     )
     pml_cells: list[int] | None = Field(
         default=None,
-        description="Number of Perfectly Matched Layer (PML) cells along each direction",
+        description="Number of Perfectly Matched Layer (PML) cells along each direction. Must be >= 0 on every axis.",
     )
 
     @model_validator(mode="after")
@@ -745,7 +789,7 @@ class PICMI_Cartesian2DGrid(_PICMIGrid):
         self._resolve_cartesian_grid()
         return self
 
-    def add_refined_region(self, level, lo, hi, refinement_factor=[2, 2]):
+    def add_refined_region(self, level, lo, hi, refinement_factor=None):
         """Add a refined region.
 
         Parameters
@@ -759,6 +803,8 @@ class PICMI_Cartesian2DGrid(_PICMIGrid):
         refinement_factor : list of int, optional
             The refinement factor relative to the next lower level (default: [2, 2])
         """
+        if refinement_factor is None:
+            refinement_factor = [2] * self.number_of_dimensions
         # assign (instead of appending in place), so that the region is validated and marked as set
         self.refined_regions = [*self.refined_regions, [level, lo, hi, refinement_factor]]
 
@@ -796,19 +842,19 @@ class PICMI_Cartesian3DGrid(_PICMIGrid):
         default=None,
         min_length=3,
         max_length=3,
-        description="Number of cells along each axis (number of nodes is number_of_cells+1)",
+        description="Number of cells along each axis (number of nodes is number_of_cells+1). Must be at least 1 on every axis.",
     )
     lower_bound: list[float] | None = Field(
         default=None,
         min_length=3,
         max_length=3,
-        description="Position of the node at the lower bound [m]",
+        description="Position of the node at the lower bound [m]. Must be less than the upper bound on every axis.",
     )
     upper_bound: list[float] | None = Field(
         default=None,
         min_length=3,
         max_length=3,
-        description="Position of the node at the upper bound [m]",
+        description="Position of the node at the upper bound [m]. Must be greater than the lower bound on every axis.",
     )
     lower_boundary_conditions: list[str | None] | None = Field(
         default=None,
@@ -948,11 +994,11 @@ class PICMI_Cartesian3DGrid(_PICMIGrid):
         description="Boundary condition at max Z for particles: One of periodic, absorbing, reflect, thermal",
     )
     guard_cells: list[int] | None = Field(
-        default=None, description="Number of guard cells used along each direction"
+        default=None, description="Number of guard cells used along each direction. Must be >= 0 on every axis."
     )
     pml_cells: list[int] | None = Field(
         default=None,
-        description="Number of Perfectly Matched Layer (PML) cells along each direction",
+        description="Number of Perfectly Matched Layer (PML) cells along each direction. Must be >= 0 on every axis.",
     )
 
     @model_validator(mode="after")
@@ -961,7 +1007,7 @@ class PICMI_Cartesian3DGrid(_PICMIGrid):
         self._resolve_cartesian_grid()
         return self
 
-    def add_refined_region(self, level, lo, hi, refinement_factor=[2, 2, 2]):
+    def add_refined_region(self, level, lo, hi, refinement_factor=None):
         """Add a refined region.
 
         Parameters
@@ -975,6 +1021,8 @@ class PICMI_Cartesian3DGrid(_PICMIGrid):
         refinement_factor : list of int, optional
             The refinement factor relative to the next lower level (default: [2, 2, 2])
         """
+        if refinement_factor is None:
+            refinement_factor = [2] * self.number_of_dimensions
         # assign (instead of appending in place), so that the region is validated and marked as set
         self.refined_regions = [*self.refined_regions, [level, lo, hi, refinement_factor]]
 
@@ -1022,7 +1070,8 @@ class PICMI_ElectromagneticSolver(PICMI_Solver):
         default=None, description="Order of stencil for each axis (-1=infinite)"
     )
     cfl: float | None = Field(
-        default=None, description="Fraction of the Courant-Friedrich-Lewy criteria [1]"
+        default=None,
+        description="Fraction of the Courant-Friedrich-Lewy criteria [1]. If both this and Simulation.time_step_size are given for a Yee, CKC, or Lehe solver on a Cartesian grid, they must be consistent.",
     )
     source_smoother: PICMI_BinomialSmoother | None = Field(
         default=None, description="Smoother object to apply to the sources"

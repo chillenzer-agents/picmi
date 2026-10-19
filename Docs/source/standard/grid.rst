@@ -28,3 +28,11 @@ Cylindrical geometry
 
 .. autopydantic_model:: picmistandard.PICMI_CylindricalGrid
     :inherited-members: BaseModel
+
+Constraints
+-----------
+
+All grids must be non-degenerate: ``number_of_cells`` must be at least 1 on every axis
+(the per-axis forms such as ``nx`` are checked as well), and ``upper_bound`` must be greater
+than ``lower_bound`` on every axis. For the cylindrical grid this includes ``rmax > rmin``.
+The number of guard cells and PML cells must be greater than or equal to 0 on every axis.

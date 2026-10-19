@@ -4,17 +4,23 @@ The classes in the file are all particle related
 """
 
 import numbers
-from typing import ClassVar, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 
 import numpy as np
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    Field,
+    PrivateAttr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from .base import (
     Expression,
     PICMI_Distribution,
+    PICMI_ExpressionParameters,
     PICMI_Layout,
     _PICMIModel,
-    PICMI_ExpressionParameters,
     broadcast_validation,
     resolve_once,
     with_mutually_exclusive,
@@ -25,6 +31,14 @@ from .interactions import PICMI_AnyInteraction, PICMI_FieldIonization
 # ---------------
 # Physics objects
 # ---------------
+
+# A particle shape is either one of the standard shapes, the equivalent integer interpolation
+# order, or a code-specific shape named after the 'other:' prefix (like `method`).
+_ParticleShape = (
+    Literal["NGP", "linear", "quadratic", "cubic"]
+    | int
+    | Annotated[str, StringConstraints(pattern=r"^other:")]
+)
 
 
 class PICMI_GaussianBunchDistribution(PICMI_Distribution):
@@ -37,7 +51,7 @@ class PICMI_GaussianBunchDistribution(PICMI_Distribution):
     rms_bunch_size: list[float] = Field(
         min_length=3,
         max_length=3,
-        description="RMS bunch size at t=0 [m]"
+        description="RMS bunch size at t=0 [m]. Must be > 0 on every axis."
     )
     rms_velocity: list[float] = Field(
         default_factory=lambda: [0., 0., 0.],
@@ -63,6 +77,14 @@ class PICMI_GaussianBunchDistribution(PICMI_Distribution):
         max_length=3,
         description="Expansion rate of the bunch at t=0 [m/s/m]"
     )
+
+    @field_validator("rms_bunch_size")
+    @classmethod
+    def _rms_bunch_size_is_positive(cls, value):
+        return broadcast_validation(
+            value, condition=lambda sigma: sigma > 0,
+            message="All rms_bunch_size components must be greater than 0.",
+        )
 
 
 class PICMI_UniformDistribution(PICMI_Distribution):
@@ -109,19 +131,19 @@ class PICMI_FoilDistribution(PICMI_Distribution):
     )
     exponential_pre_plasma_length: float | None = Field(gt=0.,
         default=None,
-        description="Length scale of exponential decay of pre-foil plasma density [m]"
+        description="Length scale of exponential decay of pre-foil plasma density [m]. Must be given together with exponential_pre_plasma_cutoff."
     )
     exponential_pre_plasma_cutoff: float | None = Field(ge=0.,
         default=None,
-        description="Cutoff length for exponential decay of pre-foil density [m]"
+        description="Cutoff length for exponential decay of pre-foil density [m]. Must be given together with exponential_pre_plasma_length."
     )
     exponential_post_plasma_length: float | None = Field(gt=0.,
         default=None,
-        description="Length scale of exponential decay of post-foil plasma density [m]"
+        description="Length scale of exponential decay of post-foil plasma density [m]. Must be given together with exponential_post_plasma_cutoff."
     )
     exponential_post_plasma_cutoff: float | None = Field(ge=0.,
         default=None,
-        description="Cutoff length for exponential decay of post-foil density [m]"
+        description="Cutoff length for exponential decay of post-foil density [m]. Must be given together with exponential_post_plasma_length."
     )
     lower_bound: list[float | None] = Field(
         default_factory=lambda: [None, None, None],
@@ -151,6 +173,20 @@ class PICMI_FoilDistribution(PICMI_Distribution):
         default=None,
         description="Flags whether to fill in the empty spaced opened up when the grid moves"
     )
+
+    @model_validator(mode="after")
+    def _ramp_parameters_come_in_pairs(self):
+        """A pre- or post-plasma ramp needs both its length and its cutoff, or neither"""
+        for side in ("pre", "post"):
+            length = getattr(self, f"exponential_{side}_plasma_length")
+            cutoff = getattr(self, f"exponential_{side}_plasma_cutoff")
+            if (length is None) != (cutoff is None):
+                raise ValueError(
+                    f"The exponential {side}-plasma ramp requires either both "
+                    f"exponential_{side}_plasma_length and exponential_{side}_plasma_cutoff, "
+                    f"or neither of them."
+                )
+        return self
 
 class PICMI_AnalyticFluxDistribution(PICMI_Distribution, PICMI_ExpressionParameters):
     """
@@ -239,7 +275,7 @@ class PICMI_AnalyticDistribution(PICMI_Distribution, PICMI_ExpressionParameters)
     )
     momentum_expressions: list[Expression | None] = Field(
         default_factory=lambda: [None, None, None],
-        description="Analytic expressions describing the gamma*velocity for each axis [m/s]. Expressions should be in terms of the position, written as 'x', 'y', and 'z'. For any axis not supplied (set to None), directed_velocity will be used."
+        description="Analytic expressions describing the gamma*velocity for each axis [m/s]. Expressions should be in terms of the position, written as 'x', 'y', and 'z'. For any axis not supplied (set to None), directed_velocity will be used. Mutually exclusive with a non-zero directed_velocity."
     )
     momentum_spread_expressions: list[Expression | None] = Field(
         default_factory=lambda: [None, None, None],
@@ -259,7 +295,7 @@ class PICMI_AnalyticDistribution(PICMI_Distribution, PICMI_ExpressionParameters)
     )
     directed_velocity: list[float] = Field(
         default_factory=lambda: [0., 0., 0.],
-        description="Directed, average, proper velocity [m/s]"
+        description="Directed, average, proper velocity [m/s]. A non-zero value is mutually exclusive with momentum_expressions."
     )
     fill_in: bool | None = Field(
         default=None,
@@ -269,6 +305,20 @@ class PICMI_AnalyticDistribution(PICMI_Distribution, PICMI_ExpressionParameters)
         default_factory=dict,
         description="Constants referenced in the analytic expressions, collected from otherwise-unrecognized keyword arguments."
     )
+
+    @model_validator(mode="after")
+    def _directed_velocity_or_momentum_expressions(self):
+        """A drift is set either by directed_velocity or by momentum_expressions, not both"""
+        has_directed_velocity = any(velocity != 0.0 for velocity in self.directed_velocity)
+        has_momentum_expressions = any(
+            expression is not None for expression in self.momentum_expressions
+        )
+        if has_directed_velocity and has_momentum_expressions:
+            raise ValueError(
+                "directed_velocity and momentum_expressions are mutually exclusive; "
+                "provide at most one of them to set the drift."
+            )
+        return self
 
 
 class PICMI_ParticleListDistribution(PICMI_Distribution):
@@ -413,7 +463,7 @@ class PICMI_GriddedLayout(PICMI_Layout):
         # reports the missing required argument instead of an invalid ``None``.
         if "n_macroparticle_per_cell" in kwargs:
             kwargs["n_macroparticles_per_cell"] = kwargs.pop("n_macroparticle_per_cell")
-        return super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     @field_validator("n_macroparticles_per_cell", mode="before")
     @classmethod
@@ -512,9 +562,9 @@ class PICMI_Species(_PICMIModel):
     density_scale: float | None = Field(
         default=None, description="A scale factor on the density given by the initial_distribution."
     )
-    particle_shape: Literal["NGP", "linear", "quadratic", "cubic"] | int | None = Field(
+    particle_shape: _ParticleShape | None = Field(
         default=None,
-        description="Particle shape used for deposition and gather. If not specified, the value from the Simulation object will be used. Other values maybe specified that are code dependent.",
+        description="Particle shape used for deposition and gather: 'NGP', 'linear', 'quadratic', 'cubic', the equivalent integer interpolation order, or a code-specific shape starting with 'other:'. If not specified, the value from the Simulation object will be used.",
     )
     interactions: list[PICMI_AnyInteraction] = Field(
         default_factory=list, description="List of interactions for this species"
@@ -523,9 +573,11 @@ class PICMI_Species(_PICMIModel):
     @field_validator("method")
     @classmethod
     def _validate_method(cls, v):
-        if v is not None and v not in PICMI_Species.methods_list and not v.startswith("other:"):
+        # Read the list from the actual class, so that a subclass can extend it.
+        methods = cls.methods_list
+        if v is not None and v not in methods and not v.startswith("other:"):
             raise ValueError(
-                f'method must start with either "other:", or be one of the following: {", ".join(PICMI_Species.methods_list)}'
+                f'method must start with either "other:", or be one of the following: {", ".join(methods)}'
             )
         return v
 
@@ -533,9 +585,6 @@ class PICMI_Species(_PICMIModel):
 # The species and the interactions reference each other
 PICMI_FieldIonization.model_rebuild(_types_namespace={"PICMI_Species": PICMI_Species})
 PICMI_Species.model_rebuild(force=True)
-
-
-_ParticleShape = Literal["NGP", "linear", "quadratic", "cubic"] | int
 
 
 class PICMI_MultiSpecies(_PICMIModel):
@@ -591,7 +640,7 @@ class PICMI_MultiSpecies(_PICMIModel):
     particle_shape: _ParticleShape | None = Field(
         default=None,
         frozen=True,
-        description="Particle shape used for deposition and gather ('NGP', 'linear', 'quadratic', 'cubic'). If not specified, the value from the `Simulation` object will be used. Other values maybe specified that are code dependent."
+        description="Particle shape used for deposition and gather: 'NGP', 'linear', 'quadratic', 'cubic', the equivalent integer interpolation order, or a code-specific shape starting with 'other:'. If not specified, the value from the `Simulation` object will be used."
     )
 
     _per_species_fields: ClassVar[tuple[str, ...]] = (

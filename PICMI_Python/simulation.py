@@ -1,17 +1,24 @@
 """Simulation class following the PICMI standard
 This should be the base classes for Python implementation of the PICMI standard
 """
-from typing import Any, Literal
+import math
+from typing import Any, ClassVar
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 
 from .applied_fields import PICMI_AnyAppliedField
-from .base import _PICMIModel
+from .base import _get_constants, _PICMIModel
 from .diagnostics import PICMI_AnyDiagnostic
-from .fields import PICMI_AnySolver
+from .fields import (
+    PICMI_AnySolver,
+    PICMI_Cartesian1DGrid,
+    PICMI_Cartesian2DGrid,
+    PICMI_Cartesian3DGrid,
+    PICMI_ElectromagneticSolver,
+)
 from .interactions import PICMI_AnyInteraction
 from .lasers import PICMI_AnyLaser, PICMI_AnyLaserInjection
-from .particles import PICMI_AnyLayout, PICMI_AnySpecies
+from .particles import PICMI_AnyLayout, PICMI_AnySpecies, _ParticleShape
 
 # ---------------------
 # Main simulation object
@@ -28,7 +35,7 @@ class PICMI_Simulation(_PICMIModel):
     )
     time_step_size: float | None = Field(
         default=None,
-        description="Absolute time step size of the simulation [s]. Needed if the CFL is not specified elsewhere."
+        description="Absolute time step size of the simulation [s]. If both this and the solver's cfl are given for a Yee, CKC, or Lehe solver on a Cartesian grid, they must be consistent."
     )
     max_steps: int | None = Field(
         default=None,
@@ -42,9 +49,9 @@ class PICMI_Simulation(_PICMIModel):
         default=None,
         description="Verbosity flag. A larger integer results in more verbose output"
     )
-    particle_shape: Literal["NGP", "linear", "quadratic", "cubic"] | int | None = Field(
+    particle_shape: _ParticleShape | None = Field(
         default="linear",
-        description="Default particle shape for species added to this simulation. One of 'NGP', 'linear', 'quadratic', 'cubic', or the equivalent integer interpolation order."
+        description="Default particle shape for species added to this simulation: 'NGP', 'linear', 'quadratic', 'cubic', the equivalent integer interpolation order, or a code-specific shape starting with 'other:'."
     )
     gamma_boost: float | None = Field(
         default=None,
@@ -99,12 +106,121 @@ class PICMI_Simulation(_PICMIModel):
         description="Interactions added with add_interaction"
     )
 
+    # The finite-difference time-domain methods that impose a Courant-Friedrichs-Lewy limit.
+    _CFL_SOLVER_METHODS: ClassVar[tuple[str, ...]] = ("Yee", "CKC", "Lehe")
+
+    # Set while _append extends the parallel lists, so that the bookkeeping check only sees
+    # the complete set of entries.
+    _suspend_species_bookkeeping: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="after")
+    def _check_species_bookkeeping(self):
+        """The per-species lists stay in sync and a layout and an initial distribution go together"""
+        if not self._suspend_species_bookkeeping:
+            self._validate_species_bookkeeping()
+        return self
+
+    @model_validator(mode="after")
+    def _check_cfl_consistency(self):
+        """A given time step size and CFL parameter must describe the same time step.
+
+        This does not derive the missing one; that is left to the implementing code.
+        """
+        solver = self.solver
+        if (
+            self.time_step_size is None
+            or not isinstance(solver, PICMI_ElectromagneticSolver)
+            or solver.cfl is None
+            or solver.method not in self._CFL_SOLVER_METHODS
+            # the radial cells of a cylindrical grid are not uniform
+            or not isinstance(
+                solver.grid,
+                (PICMI_Cartesian1DGrid, PICMI_Cartesian2DGrid, PICMI_Cartesian3DGrid),
+            )
+        ):
+            return self
+        constants = _get_constants()
+        if constants is None:
+            return self
+
+        grid = solver.grid
+        cell_size = [
+            (upper - lower) / cells
+            for lower, upper, cells in zip(
+                grid.lower_bound, grid.upper_bound, grid.number_of_cells
+            )
+        ]
+        if solver.method == "CKC":
+            # cfl = c * time_step_size / min(cell_size)
+            expected_cfl = self.time_step_size * constants.c / min(cell_size)
+        else:
+            # Yee and Lehe: cfl = c * time_step_size * sqrt(sum(1 / cell_size**2))
+            expected_cfl = self.time_step_size * constants.c * math.sqrt(
+                sum(1.0 / size**2 for size in cell_size)
+            )
+        if not math.isclose(solver.cfl, expected_cfl, rel_tol=1e-9):
+            corresponding_time_step = self.time_step_size * solver.cfl / expected_cfl
+            raise ValueError(
+                "time_step_size and the solver's cfl are inconsistent: "
+                f"cfl={solver.cfl} corresponds to time_step_size="
+                f"{corresponding_time_step} [s], but the time_step_size is "
+                f"{self.time_step_size} [s]."
+            )
+        return self
+
+    def _validate_species_bookkeeping(self):
+        """Check the species list and the parallel per-species lists"""
+        if len(self.species) != len(self.layouts):
+            raise ValueError(
+                "species and layouts must have the same length, but "
+                f"{len(self.species)=} and {len(self.layouts)=}."
+            )
+        for index, (species, layout) in enumerate(zip(self.species, self.layouts)):
+            distribution = getattr(species, "initial_distribution", None)
+            has_distribution = distribution is not None and distribution != []
+            has_layout = layout is not None and layout != []
+            if has_distribution and not has_layout:
+                raise ValueError(
+                    f"Species {index} has an initial_distribution, so it needs a layout, "
+                    "but its layout is None."
+                )
+            if has_layout and not has_distribution:
+                raise ValueError(
+                    f"Species {index} has a layout, so it needs an initial_distribution, "
+                    "but its initial_distribution is None."
+                )
+            if (
+                getattr(species, "density_scale", None) is not None
+                and not has_distribution
+            ):
+                raise ValueError(
+                    f"Species {index} has a density_scale, so it needs an initial_distribution."
+                )
+            if (
+                isinstance(distribution, list)
+                and isinstance(layout, list)
+                and len(distribution) != len(layout)
+            ):
+                raise ValueError(
+                    f"Species {index} has {len(distribution)} initial distributions, so its "
+                    f"layout list must have {len(distribution)} entries, not {len(layout)}."
+                )
+
     def _append(self, **entries):
         """Append to list fields. Assigning extended lists (instead of appending in place)
         validates the new entries; either all lists are extended or none."""
         with self._atomic_update():
-            for name, entry in entries.items():
-                setattr(self, name, [*getattr(self, name), entry])
+            self._suspend_species_bookkeeping = True
+            try:
+                for name, entry in entries.items():
+                    setattr(self, name, [*getattr(self, name), entry])
+            finally:
+                self._suspend_species_bookkeeping = False
+            # Run the cross-field validators once for the complete set of entries.
+            first_name = next(iter(entries))
+            self.__pydantic_validator__.validate_assignment(
+                self, first_name, getattr(self, first_name)
+            )
 
     def add_species(self, species, layout, initialize_self_field=None):
         """

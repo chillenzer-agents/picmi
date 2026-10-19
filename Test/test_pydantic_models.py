@@ -3,33 +3,36 @@
 Run from the repository root with: ``python -m pytest Test/``
 """
 import math
+from typing import ClassVar
 
 import numpy as np
-import pytest
-from pydantic import Field, ValidationError
-
 import picmistandard
+import pytest
 from plasmacode import picmi
+from pydantic import Field, ValidationError, field_validator
 
 
 def cartesian3d_grid_per_axis(**kw):
-    return picmi.Cartesian3DGrid(
-        nx=8, ny=8, nz=8,
-        xmin=0., xmax=1., ymin=0., ymax=1., zmin=0., zmax=1.,
-        bc_xmin="periodic", bc_xmax="periodic",
-        bc_ymin="periodic", bc_ymax="periodic",
-        bc_zmin="open", bc_zmax="open",
-        **kw,
-    )
+    values = {
+        "nx": 8, "ny": 8, "nz": 8,
+        "xmin": 0., "xmax": 1., "ymin": 0., "ymax": 1., "zmin": 0., "zmax": 1.,
+        "bc_xmin": "periodic", "bc_xmax": "periodic",
+        "bc_ymin": "periodic", "bc_ymax": "periodic",
+        "bc_zmin": "open", "bc_zmax": "open",
+    }
+    values.update(kw)
+    return picmi.Cartesian3DGrid(**values)
 
 
 def cartesian3d_grid_vectors(**kw):
-    return picmi.Cartesian3DGrid(
-        number_of_cells=[8, 8, 8], lower_bound=[0., 0., 0.], upper_bound=[1., 1., 1.],
-        lower_boundary_conditions=["open", "open", "open"],
-        upper_boundary_conditions=["open", "open", "open"],
-        **kw,
-    )
+    values = {
+        "number_of_cells": [8, 8, 8], "lower_bound": [0., 0., 0.],
+        "upper_bound": [1., 1., 1.],
+        "lower_boundary_conditions": ["open", "open", "open"],
+        "upper_boundary_conditions": ["open", "open", "open"],
+    }
+    values.update(kw)
+    return picmi.Cartesian3DGrid(**values)
 
 
 class ExtendedCartesian3DGrid(picmi.Cartesian3DGrid):
@@ -50,12 +53,13 @@ class ExtendedGaussianLaser(picmi.GaussianLaser):
 
 
 def gaussian_laser(**kw):
-    return ExtendedGaussianLaser(
-        wavelength=8e-7, waist=5e-6, duration=15e-15,
-        focal_position=[0., 0., 0.], centroid_position=[0., 0., 0.],
-        propagation_direction=[0., 0., 1.], polarization_direction=[1., 0., 0.],
-        **kw,
-    )
+    values = {
+        "wavelength": 8e-7, "waist": 5e-6, "duration": 15e-15,
+        "focal_position": [0., 0., 0.], "centroid_position": [0., 0., 0.],
+        "propagation_direction": [0., 0., 1.], "polarization_direction": [1., 0., 0.],
+    }
+    values.update(kw)
+    return ExtendedGaussianLaser(**values)
 
 
 def e0_for_a0_1(wavelength):
@@ -264,7 +268,7 @@ def test_aliases_are_also_attributes():
     with pytest.raises(ValidationError, match="has no attribute"):
         grid.plasmacode_max_grid_siz = 4
     with pytest.raises(AttributeError):
-        grid.plasmacode_unknown
+        grid.plasmacode_unknown  # noqa: B018
 
     assert "plasmacode_max_grid_size" in dir(grid)
 
@@ -401,7 +405,7 @@ def test_species_methods_list_is_class_constant():
 def test_species_identity_semantics():
     electrons = picmi.Species(particle_type="electron", name="e")
     twin = picmi.Species(particle_type="electron", name="e")
-    assert electrons == electrons
+    assert electrons == electrons  # noqa: PLR0124
     assert electrons != twin
     # usable as dictionary keys, e.g., for per-species diagnostic options
     random_fraction = {electrons: 0.5, twin: 0.25}
@@ -861,3 +865,325 @@ def test_unsupported_and_deprecated_argument_helpers():
     species._check_unsupported_argument("charge", raise_error=True)
     with pytest.raises(Exception, match="the value Boris is not supported"):
         picmi.Species(particle_type="electron", method="Boris")._unsupported_value("method")
+
+
+# --- Input validation (issue #2)
+
+
+def cartesian1d_grid(**kw):
+    values = {
+        "number_of_cells": [8], "lower_bound": [0.], "upper_bound": [1.],
+        "lower_boundary_conditions": ["open"], "upper_boundary_conditions": ["open"],
+    }
+    values.update(kw)
+    return picmi.Cartesian1DGrid(**values)
+
+
+def cartesian2d_grid(**kw):
+    values = {
+        "number_of_cells": [8, 8], "lower_bound": [0., 0.], "upper_bound": [1., 1.],
+        "lower_boundary_conditions": ["open", "open"],
+        "upper_boundary_conditions": ["open", "open"],
+    }
+    values.update(kw)
+    return picmi.Cartesian2DGrid(**values)
+
+
+def cylindrical_grid(**kw):
+    values = {
+        "nr": 8, "nz": 8, "rmin": 0., "rmax": 1., "zmin": 0., "zmax": 1.,
+        "bc_rmax": "open", "bc_zmin": "periodic", "bc_zmax": "periodic",
+    }
+    values.update(kw)
+    return picmi.CylindricalGrid(**values)
+
+
+def test_grid_number_of_cells_is_at_least_one():
+    # valid: one cell on every axis is the minimum
+    cartesian1d_grid(number_of_cells=[1])
+    cartesian2d_grid(number_of_cells=[1, 1])
+    cartesian3d_grid_vectors(number_of_cells=[1, 1, 1])
+    cylindrical_grid(nr=1, nz=1)
+
+    with pytest.raises(ValidationError, match="number of cells must be at least 1"):
+        cartesian1d_grid(number_of_cells=[0])
+    with pytest.raises(ValidationError, match="number of cells must be at least 1"):
+        cartesian2d_grid(number_of_cells=[8, 0])
+    with pytest.raises(ValidationError, match="number of cells must be at least 1"):
+        cartesian3d_grid_vectors(number_of_cells=[8, 0, 8])
+    with pytest.raises(ValidationError, match="number of cells must be at least 1"):
+        cylindrical_grid(nr=0)
+    # the per-axis forms are checked, too
+    with pytest.raises(ValidationError, match="number of cells must be at least 1"):
+        cartesian3d_grid_per_axis(nz=-3)
+
+
+def test_grid_upper_bound_is_above_lower_bound():
+    cartesian1d_grid(lower_bound=[0.], upper_bound=[1.])
+    cartesian2d_grid(lower_bound=[0., 0.], upper_bound=[1., 2.])
+    cartesian3d_grid_vectors(lower_bound=[0., 0., 0.], upper_bound=[1., 1., 1.])
+    cylindrical_grid(rmin=0., rmax=1., zmin=-1., zmax=1.)
+
+    with pytest.raises(ValidationError, match="upper bound must be greater than the lower bound"):
+        cartesian1d_grid(lower_bound=[1.], upper_bound=[1.])
+    with pytest.raises(ValidationError, match="upper bound must be greater than the lower bound"):
+        cartesian2d_grid(lower_bound=[0., 0.], upper_bound=[1., 0.])
+    with pytest.raises(ValidationError, match="upper bound must be greater than the lower bound"):
+        cartesian3d_grid_vectors(upper_bound=[1., 1., -1.])
+    # cylindrical: rmax > rmin and zmax > zmin
+    with pytest.raises(ValidationError, match="upper bound must be greater than the lower bound"):
+        cylindrical_grid(rmin=0.5, rmax=0.5)
+    with pytest.raises(ValidationError, match="upper bound must be greater than the lower bound"):
+        cylindrical_grid(zmin=1., zmax=0.)
+
+
+def test_grid_guard_and_pml_cells_are_not_negative():
+    for grid in (
+        cartesian1d_grid(guard_cells=[0], pml_cells=[0]),
+        cartesian2d_grid(guard_cells=[0, 0], pml_cells=[0, 0]),
+        cartesian3d_grid_vectors(guard_cells=[0, 0, 0], pml_cells=[0, 0, 0]),
+        cylindrical_grid(guard_cells=[0, 0], pml_cells=[0, 0]),
+    ):
+        assert min(grid.guard_cells) == 0 and min(grid.pml_cells) == 0
+
+    with pytest.raises(ValidationError, match="guard_cells must be greater than or equal to 0"):
+        cartesian3d_grid_vectors(guard_cells=[1, -1, 1])
+    with pytest.raises(ValidationError, match="pml_cells must be greater than or equal to 0"):
+        cartesian1d_grid(pml_cells=[-1])
+    with pytest.raises(ValidationError, match="pml_cells must be greater than or equal to 0"):
+        cylindrical_grid(pml_cells=[1, -2])
+
+
+def test_gaussian_bunch_rms_size_is_positive():
+    picmi.GaussianBunchDistribution(n_physical_particles=1., rms_bunch_size=[1e-6, 2e-6, 3e-6])
+    with pytest.raises(ValidationError, match="rms_bunch_size components must be greater than 0"):
+        picmi.GaussianBunchDistribution(n_physical_particles=1., rms_bunch_size=[1e-6, 0., 1e-6])
+    with pytest.raises(ValidationError, match="rms_bunch_size components must be greater than 0"):
+        picmi.GaussianBunchDistribution(n_physical_particles=1., rms_bunch_size=[1e-6, -1e-6, 1e-6])
+
+
+def test_cfl_and_time_step_size_are_cross_checked():
+    c = picmi.constants.c
+    grid = cartesian3d_grid_vectors()
+    cell_size = 1. / 8.
+    yee_time_step = 0.5 * cell_size / (c * math.sqrt(3.))
+    ckc_time_step = 0.5 * cell_size / c
+
+    for method, time_step in (
+        ("Yee", yee_time_step), ("Lehe", yee_time_step), ("CKC", ckc_time_step),
+    ):
+        solver = picmi.ElectromagneticSolver(grid=grid, method=method, cfl=0.5)
+        simulation = picmi.Simulation(solver=solver, time_step_size=time_step)
+        # the given values are not derived or overwritten
+        assert simulation.time_step_size == time_step
+        assert simulation.solver.cfl == 0.5
+
+        with pytest.raises(ValidationError, match="time_step_size and the solver's cfl are inconsistent"):
+            picmi.Simulation(
+                solver=picmi.ElectromagneticSolver(grid=grid, method=method, cfl=0.75),
+                time_step_size=time_step,
+            )
+
+    # only one of them given: the other one is left to the implementing code
+    simulation = picmi.Simulation(
+        solver=picmi.ElectromagneticSolver(grid=grid, method="Yee", cfl=0.5)
+    )
+    assert simulation.time_step_size is None
+
+
+def test_particle_shape_accepts_other_prefix():
+    for shape in ("NGP", "linear", "quadratic", "cubic", 2, "other:custom"):
+        assert picmi.Species(particle_type="electron", particle_shape=shape).particle_shape == shape
+        assert picmi.Simulation(particle_shape=shape).particle_shape == shape
+        assert picmi.MultiSpecies(
+            particle_types="electron", particle_shape=shape
+        ).particle_shape == shape
+
+    with pytest.raises(ValidationError):
+        picmi.Species(particle_type="electron", particle_shape="custom")
+    with pytest.raises(ValidationError):
+        picmi.Simulation(particle_shape="custom")
+
+
+def test_laser_vectors_have_length_3_and_directions_are_unit_vectors():
+    gaussian_laser(a0=1., propagation_direction=[0., 0., 1.], polarization_direction=[1., 0., 0.])
+
+    with pytest.raises(ValidationError, match="propagation_direction must be a vector of length 3"):
+        gaussian_laser(propagation_direction=[0., 1.])
+    with pytest.raises(ValidationError, match="propagation_direction must be a unit vector"):
+        gaussian_laser(propagation_direction=[0., 0., 2.])
+    with pytest.raises(ValidationError, match="polarization_direction must be a unit vector"):
+        gaussian_laser(polarization_direction=[1., 1., 0.])
+    with pytest.raises(ValidationError, match="focal_position must be a vector of length 3"):
+        gaussian_laser(focal_position=[0., 0.])
+    with pytest.raises(ValidationError, match="centroid_position must be a vector of length 3"):
+        gaussian_laser(centroid_position=[0., 0., 0., 0.])
+
+    picmi.LaserAntenna(position=[1., 2., 3.], normal_vector=[0., 0., 1.])
+    with pytest.raises(ValidationError, match="position must be a vector of length 3"):
+        picmi.LaserAntenna(position=[1., 2.])
+    with pytest.raises(ValidationError, match="normal_vector must be a unit vector"):
+        picmi.LaserAntenna(position=[0., 0., 0.], normal_vector=[0., 0., 2.])
+
+
+def test_gaussian_laser_centroid_and_focus_are_collinear():
+    # focus behind the centroid along the propagation direction
+    gaussian_laser(
+        a0=1., centroid_position=[0., 0., -1e-3], focal_position=[0., 0., 0.],
+        propagation_direction=[0., 0., 1.],
+    )
+    # the squared norm of the cross product is below the 1e-5 tolerance
+    gaussian_laser(a0=1., centroid_position=[1e-4, 0., 0.], focal_position=[0., 0., 0.])
+
+    with pytest.raises(ValidationError, match="not collinear"):
+        gaussian_laser(a0=1., centroid_position=[0., 1e-2, 0.], focal_position=[0., 0., 0.])
+
+
+def test_analytic_distribution_drift_is_unambiguous():
+    picmi.AnalyticDistribution(density_expression="1", directed_velocity=[1e6, 0., 0.])
+    picmi.AnalyticDistribution(
+        density_expression="1", momentum_expressions=["1e6", None, None]
+    )
+    picmi.AnalyticDistribution(
+        density_expression="1", directed_velocity=[0., 0., 0.],
+        momentum_expressions=["1e6", None, None],
+    )
+    with pytest.raises(ValidationError, match="directed_velocity and momentum_expressions are mutually exclusive"):
+        picmi.AnalyticDistribution(
+            density_expression="1", directed_velocity=[1e6, 0., 0.],
+            momentum_expressions=["1e6", None, None],
+        )
+
+
+def test_foil_distribution_ramp_parameters_come_in_pairs():
+    picmi.FoilDistribution(density=1e23, front=0., thickness=1e-6)
+    picmi.FoilDistribution(
+        density=1e23, front=0., thickness=1e-6,
+        exponential_pre_plasma_length=1e-6, exponential_pre_plasma_cutoff=1e-5,
+        exponential_post_plasma_length=2e-6, exponential_post_plasma_cutoff=2e-5,
+    )
+    with pytest.raises(ValidationError, match="pre-plasma ramp requires either both"):
+        picmi.FoilDistribution(
+            density=1e23, front=0., thickness=1e-6, exponential_pre_plasma_length=1e-6
+        )
+    with pytest.raises(ValidationError, match="pre-plasma ramp requires either both"):
+        picmi.FoilDistribution(
+            density=1e23, front=0., thickness=1e-6, exponential_pre_plasma_cutoff=1e-5
+        )
+    with pytest.raises(ValidationError, match="post-plasma ramp requires either both"):
+        picmi.FoilDistribution(
+            density=1e23, front=0., thickness=1e-6, exponential_post_plasma_cutoff=1e-5
+        )
+
+
+def test_simulation_validates_species_and_layout_bookkeeping():
+    layout = picmi.GriddedLayout(n_macroparticles_per_cell=[1, 1, 1])
+    distribution = picmi.UniformDistribution(density=1e23)
+    species = picmi.Species(
+        particle_type="electron", name="electrons", initial_distribution=distribution,
+    )
+
+    # the declarative constructor path
+    simulation = picmi.Simulation(species=[species], layouts=[layout])
+    assert simulation.species == [species] and simulation.layouts == [layout]
+    with pytest.raises(ValidationError, match="species and layouts must have the same length"):
+        picmi.Simulation(species=[species], layouts=[])
+    with pytest.raises(ValidationError, match="needs a layout"):
+        picmi.Simulation(species=[species], layouts=[None])
+    with pytest.raises(ValidationError, match="needs an initial_distribution"):
+        picmi.Simulation(
+            species=[picmi.Species(particle_type="electron")], layouts=[layout]
+        )
+    with pytest.raises(ValidationError, match="density_scale, so it needs an initial_distribution"):
+        picmi.Simulation(
+            species=[picmi.Species(particle_type="electron", density_scale=2.)],
+            layouts=[None],
+        )
+    with pytest.raises(ValidationError, match="layout list must have 2 entries"):
+        picmi.Simulation(
+            species=[picmi.Species(
+                particle_type="electron",
+                initial_distribution=[distribution, distribution],
+            )],
+            layouts=[[layout]],
+        )
+
+    # the add_species path stays atomic
+    simulation = picmi.Simulation()
+    simulation.add_species(species, layout)
+    with pytest.raises(ValidationError, match="needs a layout"):
+        simulation.add_species(species, None)
+    with pytest.raises(ValidationError, match="needs an initial_distribution"):
+        simulation.add_species(picmi.Species(particle_type="electron"), layout)
+    assert simulation.species == [species] and simulation.layouts == [layout]
+
+    # direct assignment cannot desynchronize the lists
+    with pytest.raises(ValidationError, match="species and layouts must have the same length"):
+        simulation.layouts = []
+    assert simulation.species == [species] and simulation.layouts == [layout]
+
+
+def test_diagnostic_period_is_at_least_one():
+    grid = cartesian3d_grid_vectors()
+    for diagnostic_class, kw in (
+        (picmi.FieldDiagnostic, {"grid": grid}),
+        (picmi.ElectrostaticFieldDiagnostic, {"grid": grid}),
+        (picmi.ParticleDiagnostic, {}),
+        (picmi.ParticleBoundaryScrapingDiagnostic, {}),
+    ):
+        diagnostic_class(period=1, **kw)
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            diagnostic_class(period=0, **kw)
+
+
+def test_subclass_validators_and_methods_list_semantics():
+    """Pin how downstream codes extend validators and the method list.
+
+    Validators of a subclass are merged with the inherited ones (they all run), unless a
+    subclass redefines a validator with the same name: pydantic then replaces the inherited
+    one, so a downstream code that wants to add a check must use a distinct name.
+    """
+    class Parent(picmistandard.PICMI_Species):
+        @field_validator("name")
+        @classmethod
+        def _reject_names(cls, value):
+            if value == "parent-only":
+                raise ValueError("parent rejects")
+            return value
+
+    class Child(Parent):
+        @field_validator("name")
+        @classmethod
+        def _reject_other_names(cls, value):
+            if value == "child-only":
+                raise ValueError("child rejects")
+            return value
+
+    with pytest.raises(ValidationError, match="parent rejects"):
+        Child(name="parent-only")
+    with pytest.raises(ValidationError, match="child rejects"):
+        Child(name="child-only")
+    assert Child(name="fine").name == "fine"
+
+    # a same-named redefinition replaces the inherited validator (pydantic v2 semantics)
+    class ShadowingChild(Parent):
+        @field_validator("name")
+        @classmethod
+        def _reject_names(cls, value):
+            if value == "child-only":
+                raise ValueError("child rejects")
+            return value
+
+    assert ShadowingChild(name="parent-only").name == "parent-only"
+    with pytest.raises(ValidationError, match="child rejects"):
+        ShadowingChild(name="child-only")
+
+    # a subclass extends the accepted particle advance methods
+    class ExtendedSpecies(picmistandard.PICMI_Species):
+        methods_list: ClassVar[list[str]] = [
+            *picmistandard.PICMI_Species.methods_list, "Custom"
+        ]
+
+    assert ExtendedSpecies(name="e", method="Custom").method == "Custom"
+    with pytest.raises(ValidationError, match="Custom"):
+        picmistandard.PICMI_Species(name="e", method="Custom")
