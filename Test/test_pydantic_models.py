@@ -5,11 +5,10 @@ Run from the repository root with: ``python -m pytest Test/``
 import math
 
 import numpy as np
-import pytest
-from pydantic import Field, ValidationError
-
 import picmistandard
+import pytest
 from plasmacode import picmi
+from pydantic import Field, ValidationError
 
 
 def cartesian3d_grid_per_axis(**kw):
@@ -264,7 +263,7 @@ def test_aliases_are_also_attributes():
     with pytest.raises(ValidationError, match="has no attribute"):
         grid.plasmacode_max_grid_siz = 4
     with pytest.raises(AttributeError):
-        grid.plasmacode_unknown
+        _ = grid.plasmacode_unknown
 
     assert "plasmacode_max_grid_size" in dir(grid)
 
@@ -401,7 +400,8 @@ def test_species_methods_list_is_class_constant():
 def test_species_identity_semantics():
     electrons = picmi.Species(particle_type="electron", name="e")
     twin = picmi.Species(particle_type="electron", name="e")
-    assert electrons == electrons
+    same_electrons = electrons
+    assert electrons == same_electrons
     assert electrons != twin
     # usable as dictionary keys, e.g., for per-species diagnostic options
     random_fraction = {electrons: 0.5, twin: 0.25}
@@ -861,3 +861,301 @@ def test_unsupported_and_deprecated_argument_helpers():
     species._check_unsupported_argument("charge", raise_error=True)
     with pytest.raises(Exception, match="the value Boris is not supported"):
         picmi.Species(particle_type="electron", method="Boris")._unsupported_value("method")
+
+
+# --- Time step specifications
+
+# 201 valid time steps: indices 0 .. 200. ``num_steps`` is the *number* of steps,
+# so a negative index counts from the end with -1 denoting index num_steps - 1.
+# This is deliberately not a literal port of PIConGPU's matrix: there the variable
+# passed as ``num_steps`` is actually the largest index (INDEX_MAX = 200) and a
+# negative start is resolved as ``num_steps + start``. Consequently TS[-20::10]
+# selects {181, 191} here, whereas the PIConGPU matrix (INDEX_MAX = 200) selects
+# {180, 190, 200} for the same expression. The covered index range is the same.
+NUM_STEPS = 201
+TIME_STEP_SIZE = 0.5
+
+
+def selected_steps(spec, time_step_size=TIME_STEP_SIZE, num_steps=NUM_STEPS):
+    """The union of the steps selected by a resolved TimeStepSpec."""
+    result = set()
+    for resolved in spec.get_as_steps(time_step_size, num_steps):
+        result.update(range(resolved.start, resolved.stop, resolved.step))
+    return result
+
+
+TESTCASES_IN_STEPS = [
+    (picmistandard.TS[::]("steps"), set(range(NUM_STEPS))),
+    (picmistandard.TS[10:]("steps"), set(range(10, NUM_STEPS))),
+    (picmistandard.TS[10::]("steps"), set(range(10, NUM_STEPS))),
+    (picmistandard.TS[:10:]("steps"), set(range(11))),
+    (picmistandard.TS[::10]("steps"), set(range(0, NUM_STEPS, 10))),
+    (picmistandard.TS[10:20]("steps"), set(range(10, 21))),
+    (picmistandard.TS[:20:10]("steps"), set(range(0, 21, 10))),
+    (picmistandard.TS[20::10]("steps"), set(range(20, NUM_STEPS, 10))),
+    (picmistandard.TS[20:50:10]("steps"), set(range(20, 51, 10))),
+    (
+        picmistandard.TS[20:50:10, ::7]("steps"),
+        set(range(20, 51, 10)) | set(range(0, NUM_STEPS, 7)),
+    ),
+    (picmistandard.TS[11]("steps"), {11}),
+    (picmistandard.TS[11:12, 11]("steps"), {11, 12}),
+    (picmistandard.TS[10:12, 11]("steps"), {10, 11, 12}),
+    (
+        picmistandard.TS[20:50:10, ::7, 11]("steps"),
+        set(range(20, 51, 10)) | set(range(0, NUM_STEPS, 7)) | {11},
+    ),
+    (picmistandard.TS[-10:]("steps"), set(range(NUM_STEPS - 10, NUM_STEPS))),
+    (picmistandard.TS[:-10:]("steps"), set(range(NUM_STEPS - 10 + 1))),
+    (picmistandard.TS[-10:20]("steps"), set()),
+    (picmistandard.TS[-10:195]("steps"), set(range(NUM_STEPS - 10, 196))),
+    (picmistandard.TS[10:-20]("steps"), set(range(10, NUM_STEPS - 20 + 1))),
+    (picmistandard.TS[:-20:10]("steps"), set(range(0, NUM_STEPS - 20 + 1, 10))),
+    (picmistandard.TS[-20::10]("steps"), set(range(NUM_STEPS - 20, NUM_STEPS, 10))),
+    (picmistandard.TS[-20:50:10]("steps"), set()),
+    (picmistandard.TS[-20:190:10]("steps"), set(range(NUM_STEPS - 20, 191, 10))),
+    (picmistandard.TS[20:-50:10]("steps"), set(range(20, NUM_STEPS - 50 + 1, 10))),
+    (picmistandard.TS[-20:-50:10]("steps"), set()),
+    (picmistandard.TS[-11]("steps"), {NUM_STEPS - 11}),
+]
+
+# in seconds, with TIME_STEP_SIZE = 0.5
+TESTCASES_IN_SECONDS = [
+    (picmistandard.TS[::]("seconds"), set(range(NUM_STEPS))),
+    (picmistandard.TS[10:]("seconds"), set(range(20, NUM_STEPS))),
+    (picmistandard.TS[:10:]("seconds"), set(range(21))),
+    (picmistandard.TS[::10]("seconds"), set(range(0, NUM_STEPS, 20))),
+    (picmistandard.TS[10:20]("seconds"), set(range(20, 41))),
+    (picmistandard.TS[:20:10]("seconds"), set(range(0, 41, 20))),
+    (picmistandard.TS[20::10]("seconds"), set(range(40, NUM_STEPS, 20))),
+    (picmistandard.TS[20:50:10]("seconds"), set(range(40, 101, 20))),
+    (
+        picmistandard.TS[20:50:10, ::7]("seconds"),
+        set(range(40, 101, 20)) | set(range(0, NUM_STEPS, 14)),
+    ),
+    (picmistandard.TS[11]("seconds"), {22}),
+    (picmistandard.TS[11:12, 11]("seconds"), {22, 23, 24}),
+    (picmistandard.TS[10:12, 11]("seconds"), set(range(20, 25))),
+    (
+        picmistandard.TS[20:50:10, ::7, 11]("seconds"),
+        set(range(40, 101, 20)) | set(range(0, NUM_STEPS, 14)) | {22},
+    ),
+    (picmistandard.TS[-10:]("seconds"), set(range(NUM_STEPS - 20, NUM_STEPS))),
+    (picmistandard.TS[:-10:]("seconds"), set(range(NUM_STEPS - 20 + 1))),
+    (picmistandard.TS[-10:20]("seconds"), set()),
+    (picmistandard.TS[-10:90]("seconds"), set()),
+    (picmistandard.TS[10:-20]("seconds"), set(range(20, NUM_STEPS - 40 + 1))),
+    (picmistandard.TS[:-20:10]("seconds"), set(range(0, NUM_STEPS - 40 + 1, 20))),
+    (picmistandard.TS[-20::10]("seconds"), set(range(NUM_STEPS - 40, NUM_STEPS, 20))),
+    (picmistandard.TS[-20:50:10]("seconds"), set()),
+    (picmistandard.TS[-20:90:10]("seconds"), set(range(NUM_STEPS - 40, 181, 20))),
+    (picmistandard.TS[20:-50:10]("seconds"), set(range(40, NUM_STEPS - 100 + 1, 20))),
+    (picmistandard.TS[-20:-50:10]("seconds"), set()),
+    (picmistandard.TS[-11]("seconds"), {NUM_STEPS - 22}),
+]
+
+TESTCASES_IN_STEPS_RAISING = [
+    picmistandard.TS[::-10]("steps"),
+    picmistandard.TS[:20:-10]("steps"),
+    picmistandard.TS[20::-10]("steps"),
+    picmistandard.TS[20:50:-10]("steps"),
+    picmistandard.TS[-20:50:-10]("steps"),
+    picmistandard.TS[20:-50:-10]("steps"),
+    picmistandard.TS[-20:-50:-10]("steps"),
+]
+
+TESTCASES_IN_SECONDS_RAISING = [
+    picmistandard.TS[::-10]("seconds"),
+    picmistandard.TS[:20:-10]("seconds"),
+    picmistandard.TS[20::-10]("seconds"),
+    picmistandard.TS[20:50:-10]("seconds"),
+    picmistandard.TS[-20:50:-10]("seconds"),
+    picmistandard.TS[20:-50:-10]("seconds"),
+    picmistandard.TS[-20:-50:-10]("seconds"),
+]
+
+
+@pytest.mark.parametrize("spec, expected", TESTCASES_IN_STEPS + TESTCASES_IN_SECONDS)
+def test_time_step_spec_resolution(spec, expected):
+    assert selected_steps(spec) == expected
+
+
+def test_time_step_spec_constructor_compatibility():
+    assert selected_steps(picmistandard.TimeStepSpec[10:20]("steps")) == set(range(10, 21))
+
+
+def test_time_step_spec_addition_is_a_union_and_does_not_mutate():
+    in_steps = picmistandard.TS[20:50:10]("steps")
+    in_seconds = picmistandard.TS[::7]("seconds")
+    union = in_steps + in_seconds
+    assert union.unit_system == "mixed"
+    assert union.specs == in_steps.specs
+    assert union.specs_in_seconds == in_seconds.specs_in_seconds
+    assert selected_steps(union) == selected_steps(in_steps) | selected_steps(in_seconds)
+    # the operands are unchanged (the models are immutable)
+    assert in_steps.unit_system == "steps" and in_steps.specs_in_seconds == ()
+    assert in_seconds.unit_system == "seconds" and in_seconds.specs == ()
+
+
+@pytest.mark.parametrize("spec", TESTCASES_IN_STEPS_RAISING)
+def test_time_step_spec_raises_on_negative_step_size_in_steps(spec):
+    with pytest.raises(ValueError, match="Step size must be >= 1"):
+        spec.get_as_steps(TIME_STEP_SIZE, NUM_STEPS)
+
+
+@pytest.mark.parametrize("spec", TESTCASES_IN_SECONDS_RAISING)
+def test_time_step_spec_raises_on_negative_step_size_in_seconds(spec):
+    with pytest.raises(ValueError, match="Step size must be >= 0 in a specification in seconds"):
+        spec.get_as_steps(TIME_STEP_SIZE, NUM_STEPS)
+
+
+@pytest.mark.parametrize("time_step_size", [None, 0.0, -1.0])
+def test_time_step_spec_raises_without_positive_time_step_size(time_step_size):
+    with pytest.raises(ValueError, match="Time step size must be strictly positive"):
+        picmistandard.TS[:]("seconds").get_as_steps(time_step_size, NUM_STEPS)
+
+
+def test_time_step_spec_in_steps_does_not_need_a_time_step_size():
+    assert selected_steps(
+        picmistandard.TS[::10]("steps"), time_step_size=None
+    ) == set(range(0, NUM_STEPS, 10))
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        picmistandard.TS[::]("steps"),
+        picmistandard.TS[0]("steps"),
+        picmistandard.TS[-1]("steps"),
+        picmistandard.TS[0:10]("steps"),
+    ],
+)
+def test_time_step_spec_with_zero_num_steps_is_empty(spec):
+    assert spec.get_as_steps(TIME_STEP_SIZE, 0) == ()
+
+
+@pytest.mark.parametrize("num_steps", [-1, -201])
+def test_time_step_spec_raises_on_negative_num_steps(num_steps):
+    with pytest.raises(ValueError, match="num_steps must not be negative"):
+        picmistandard.TS[:]("steps").get_as_steps(TIME_STEP_SIZE, num_steps)
+
+
+def test_time_step_spec_out_of_range_negative_start_keeps_stride():
+    # -1000 resolves to -799; clipping keeps the stride aligned with the
+    # original start, so the first selected step is 1.
+    assert selected_steps(
+        picmistandard.TS[-1000::10]("steps")
+    ) == set(range(1, NUM_STEPS, 10))
+
+
+def test_time_step_spec_over_large_stop_is_clipped():
+    assert selected_steps(
+        picmistandard.TS[0:10000:10]("steps")
+    ) == set(range(0, NUM_STEPS, 10))
+
+
+def test_time_step_spec_rounding_in_unit_conversion():
+    # Values are chosen to trigger all rounding special cases.
+    time_step_size = 0.3333
+    start, stop, step = 6.8, 20.1, 0.7
+    spec = picmistandard.TS[start:stop:step]("seconds")
+    expected = {
+        i for i in range(NUM_STEPS)
+        if i >= math.floor(start / time_step_size)
+        and i <= math.ceil(stop / time_step_size)
+        and (i - math.floor(start / time_step_size)) % max(math.floor(step / time_step_size), 1) == 0
+    }
+    assert selected_steps(spec, time_step_size=time_step_size) == expected
+    assert expected == set(range(20, 61, 2))
+
+
+def test_time_step_spec_step_size_below_one_in_seconds():
+    spec = picmistandard.TS[::0.5]("seconds")
+    assert selected_steps(spec, time_step_size=0.7) == set(range(NUM_STEPS))
+
+
+def test_time_step_spec_is_immutable():
+    spec = picmistandard.TS[::10]("steps")
+    with pytest.raises(ValidationError, match="frozen"):
+        spec.specs = ()
+    with pytest.raises(ValidationError, match="frozen"):
+        spec.specs[0].start = 5
+    # frozen models are hashable
+    assert isinstance(hash(spec), int)
+
+
+def test_time_step_spec_json_round_trip_before_conversion():
+    spec = picmistandard.TS[-10:1e-13:2e-15]("seconds")
+    loaded = picmistandard.TimeStepSpec.model_validate_json(spec.model_dump_json())
+    assert loaded == spec
+    assert loaded.model_dump() == spec.model_dump()
+    assert loaded.specs_in_seconds == spec.specs_in_seconds
+    # the standard's load helper restores the class from the serialized data
+    loaded_with_load = picmistandard.load(spec.model_dump_json())
+    assert type(loaded_with_load) is picmistandard.TimeStepSpec
+    assert loaded_with_load == spec
+    # the round-tripped spec still resolves identically
+    assert selected_steps(loaded) == selected_steps(spec)
+
+
+def test_time_step_spec_mixed_units_load_round_trip():
+    spec = picmistandard.TS[::10]("steps") + picmistandard.TS[0:1e-13:2e-15]("seconds")
+    assert spec.unit_system == "mixed"
+    loaded = picmistandard.load(spec.model_dump_json())
+    assert type(loaded) is picmistandard.TimeStepSpec
+    assert loaded == spec
+    assert loaded.unit_system == "mixed"
+    assert loaded.specs == spec.specs
+    assert loaded.specs_in_seconds == spec.specs_in_seconds
+    assert selected_steps(loaded) == selected_steps(spec)
+
+
+def test_time_step_spec_clipping_and_empty_set():
+    spec = picmistandard.TS[-10:1e6]("steps")
+    resolved = spec.get_as_steps(TIME_STEP_SIZE, 5)
+    assert resolved == (slice(0, 5, 1),)
+    # entirely outside the run: empty, not an error and not moved to an endpoint
+    assert picmistandard.TS[10:20]("steps").get_as_steps(TIME_STEP_SIZE, 5) == ()
+    assert picmistandard.TS[-100]("steps").get_as_steps(TIME_STEP_SIZE, 5) == ()
+    # a stop below -1 that resolves to the -1 sentinel is still out of range
+    assert picmistandard.TS[:-6]("steps").get_as_steps(TIME_STEP_SIZE, 5) == ()
+    # while an explicit -1 selects the last time step
+    assert selected_steps(picmistandard.TS[:-1]("steps"), num_steps=5) == set(range(5))
+
+
+def test_time_step_spec_unit_cannot_be_reset():
+    factory = picmistandard.TS[:]
+    factory("steps")
+    with pytest.raises(ValueError, match="Don't reset units"):
+        factory("seconds")
+    with pytest.raises(ValueError, match="Unknown unit"):
+        picmistandard.TS[:]("meters")
+    # setting the same unit again is fine
+    factory("steps")
+
+
+def test_period_still_accepts_an_integer():
+    diagnostic = picmi.ParticleDiagnostic(period=100)
+    assert diagnostic.period == 100
+    assert type(diagnostic.period) is int
+
+
+def test_period_accepts_a_time_step_spec_on_all_step_scheduled_diagnostics():
+    grid = cartesian3d_grid_vectors()
+    spec = picmistandard.TS[::10]("steps")
+    diagnostics = [
+        picmi.FieldDiagnostic(grid=grid, period=spec),
+        picmi.ElectrostaticFieldDiagnostic(grid=grid, period=spec),
+        picmi.ParticleDiagnostic(period=spec),
+        picmi.ParticleBoundaryScrapingDiagnostic(period=spec),
+    ]
+    for diagnostic in diagnostics:
+        assert diagnostic.period is spec
+        loaded = type(diagnostic).model_validate_json(diagnostic.model_dump_json())
+        assert loaded.period == spec
+
+
+def test_lab_frame_diagnostics_are_unchanged():
+    # lab-frame diagnostics schedule by number of snapshots, not by a period
+    assert "period" not in picmistandard.PICMI_LabFrameFieldDiagnostic.model_fields
+    assert "period" not in picmistandard.PICMI_LabFrameParticleDiagnostic.model_fields
